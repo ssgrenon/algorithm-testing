@@ -142,6 +142,38 @@ for light/dark and mobile) build on it, so the two never drift apart.
 schedule and publishes the result to GitHub Pages -- see "View this
 week's report" above.
 
+## How many entries should you buy? (portfolio analysis)
+
+Separate from the weekly picker: `simulate_portfolio.py` answers a
+before-the-season question -- how many entries (each $10, all bought
+before the season starts, no repeat teams within an entry) maximizes the
+chance that *at least one* of them survives the entire season?
+
+```bash
+python simulate_portfolio.py --max-entries 10 --trials-per-season 1000 --num-seasons 100
+```
+
+It sweeps entry counts 1..N and Monte Carlo simulates each: every week,
+every live entry takes the best team it hasn't used yet, next-best on a
+collision with another of your own entries (`analysis/portfolio_simulator.py`
+-- a generalization of `strategy/joint_optimizer.py` from 2 entries to N,
+deliberately *not* excluding two of your entries landing on opposite
+sides of the same game, since for "at least one survives" that actually
+guarantees one of them wins that week). Since ESPN only has data for the
+current week and a short look-ahead (and this dev environment can't
+reach ESPN's API at all), full-season trials run against a synthetic
+season generator (`analysis/synthetic_season.py`) calibrated to realistic
+NFL spread-to-win-probability odds, not real historical games.
+
+This tool doesn't model your ~300 pool competitors or a payout split --
+it purely answers "does at least one of my entries go all the way,"
+independent of anyone else. The result is a diminishing-returns curve:
+each additional entry helps, but by less each time (e.g. one run put the
+2nd entry's marginal gain at roughly 2.5x the 10th entry's), since
+diversification runs out of good teams for the marginal entry sooner.
+`--out` writes the full sweep to JSON if you want to chart or dig into it
+further.
+
 ## Setup
 
 ```bash
@@ -186,6 +218,10 @@ python generate_report.py --out docs/index.html
 ```
 .github/workflows/
   weekly-report.yml         scheduled + on-demand GitHub Pages publish
+analysis/
+  synthetic_season.py       randomized NFL-like season generator, for Monte Carlo
+  portfolio_simulator.py    N-entry greedy assignment + season-survival simulation
+simulate_portfolio.py       sweeps entry count 1..N, reports P(survive) + marginal gain
 config.py                  entries, cache dir/TTL, season type
 data/
   espn_client.py            ESPN API client: fetch + cache + retry + parsing
@@ -222,6 +258,8 @@ tests/
   test_pick_history.py      win/loss/tie/pending resolution tests
   test_main.py              CLI confirmation prompt + no-data path
   test_generate_report.py   HTML report generation script
+  test_synthetic_season.py  synthetic season generator tests
+  test_portfolio_simulator.py  N-entry assignment + sweep tests
 ```
 
 ## Notes on being a good API citizen
