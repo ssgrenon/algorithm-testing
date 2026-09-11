@@ -149,30 +149,52 @@ before-the-season question -- how many entries (each $10, all bought
 before the season starts, no repeat teams within an entry) maximizes the
 chance that *at least one* of them survives the entire season?
 
+It sweeps entry counts 1..N: every week, every live entry takes the best
+team it hasn't used yet, next-best on a collision with another of your
+own entries (`analysis/portfolio_simulator.py` -- a generalization of
+`strategy/joint_optimizer.py` from 2 entries to N, deliberately *not*
+excluding two of your entries landing on opposite sides of the same
+game, since for "at least one survives" that actually guarantees one of
+them wins that week). This tool doesn't model your ~300 pool competitors
+or a payout split -- it purely answers "does at least one of my entries
+go all the way," independent of anyone else. The result is a
+diminishing-returns curve: each additional entry helps, but by less each
+time, since diversification runs out of good teams for the marginal
+entry sooner.
+
+Two data sources for the underlying seasons:
+
 ```bash
-python simulate_portfolio.py --max-entries 10 --trials-per-season 1000 --num-seasons 100
+# Real: the 10 most recently completed NFL seasons (2016-2025), closing
+# spreads from nflverse/nfldata's public games.csv, converted to win
+# probability via the same spread-to-win% formula the synthetic model
+# uses. Fetches fresh from GitHub each run unless you pass --games-csv.
+python simulate_portfolio.py --source real --years 2016-2025 --trials-per-season 10000
+
+# Synthetic: a randomized season generator (analysis/synthetic_season.py),
+# run many times for statistical smoothness. Doesn't depend on any
+# external data -- useful as a large-sample reference, and it's what this
+# tool used before real data was wired in (consistently a bit more
+# optimistic than what actually happened).
+python simulate_portfolio.py --source synthetic --max-entries 10 --trials-per-season 1000 --num-seasons 100
 ```
 
-It sweeps entry counts 1..N and Monte Carlo simulates each: every week,
-every live entry takes the best team it hasn't used yet, next-best on a
-collision with another of your own entries (`analysis/portfolio_simulator.py`
--- a generalization of `strategy/joint_optimizer.py` from 2 entries to N,
-deliberately *not* excluding two of your entries landing on opposite
-sides of the same game, since for "at least one survives" that actually
-guarantees one of them wins that week). Since ESPN only has data for the
-current week and a short look-ahead (and this dev environment can't
-reach ESPN's API at all), full-season trials run against a synthetic
-season generator (`analysis/synthetic_season.py`) calibrated to realistic
-NFL spread-to-win-probability odds, not real historical games.
+`--out` writes the full sweep to JSON either way, if you want to chart or
+dig into it further. `analysis/nflverse_games.py` is the real-data loader
+(`fetch_and_load_seasons` / `load_seasons_from_file`); both sources
+funnel into the same `run_sweep_on_seasons` in `analysis/portfolio_simulator.py`,
+so the two are directly comparable.
 
-This tool doesn't model your ~300 pool competitors or a payout split --
-it purely answers "does at least one of my entries go all the way,"
-independent of anyone else. The result is a diminishing-returns curve:
-each additional entry helps, but by less each time (e.g. one run put the
-2nd entry's marginal gain at roughly 2.5x the 10th entry's), since
-diversification runs out of good teams for the marginal entry sooner.
-`--out` writes the full sweep to JSON if you want to chart or dig into it
-further.
+ESPN's own API (`data/espn_client.py`) only has the current week and a
+short look-ahead, and this dev environment is blocked by organization
+policy from reaching it at all -- confirmed with a 403 policy denial on
+the CONNECT tunnel, not a transient failure. `analysis/fetch_historical_season.py`
++ `.github/workflows/fetch-historical-season.yml` exist as an alternative
+real-data path that runs the fetch inside GitHub Actions instead (which
+has normal internet access, the same way the weekly-report workflow
+does) -- but in practice ESPN's API returned essentially nothing for old
+completed seasons (a 298-byte result for a 10-year request), so
+nflverse's games.csv is the one actually in use.
 
 ## Setup
 
@@ -217,11 +239,15 @@ python generate_report.py --out docs/index.html
 
 ```
 .github/workflows/
-  weekly-report.yml         scheduled + on-demand GitHub Pages publish
+  weekly-report.yml            scheduled + on-demand GitHub Pages publish
+  fetch-historical-season.yml  manual: fetch a real season via ESPN (see caveat above)
 analysis/
   synthetic_season.py       randomized NFL-like season generator, for Monte Carlo
   portfolio_simulator.py    N-entry greedy assignment + season-survival simulation
-simulate_portfolio.py       sweeps entry count 1..N, reports P(survive) + marginal gain
+  nflverse_games.py         real season loader: nflverse/nfldata's games.csv -> MatchupProb
+  fetch_historical_season.py  ESPN-based real-season fetch (ESPN returns ~nothing for old seasons)
+  real_season.py            loader for fetch_historical_season.py's output shape
+simulate_portfolio.py       sweeps entry count 1..N, reports P(survive) + marginal gain (real or synthetic)
 config.py                  entries, cache dir/TTL, season type
 data/
   espn_client.py            ESPN API client: fetch + cache + retry + parsing
@@ -260,6 +286,10 @@ tests/
   test_generate_report.py   HTML report generation script
   test_synthetic_season.py  synthetic season generator tests
   test_portfolio_simulator.py  N-entry assignment + sweep tests
+  test_nflverse_games.py    real-season CSV parsing + spread-sign tests
+  test_fetch_historical_season.py  ESPN-based real-season fetch tests
+  test_real_season.py       loader tests for fetch_historical_season.py's output
+  test_simulate_portfolio.py  CLI dispatch tests (real + synthetic sources)
 ```
 
 ## Notes on being a good API citizen

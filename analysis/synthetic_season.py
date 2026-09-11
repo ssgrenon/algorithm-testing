@@ -38,9 +38,14 @@ class MatchupProb:
     win_pct: float  # 0-100
 
 
-def _win_probability(rating_diff: float) -> float:
-    """Standard normal-CDF spread-to-win-probability conversion."""
-    return 0.5 * (1 + math.erf(rating_diff / (MARGIN_STDDEV * math.sqrt(2))))
+def spread_to_win_probability(points: float) -> float:
+    """Standard normal-CDF spread-to-win-probability conversion, shared with
+    analysis/nflverse_games.py (there applied to a real closing spread
+    instead of a synthetic rating difference). ``points`` is the expected
+    margin for the side being scored (positive = favored by that many
+    points).
+    """
+    return 0.5 * (1 + math.erf(points / (MARGIN_STDDEV * math.sqrt(2))))
 
 
 def generate_team_ratings(rng: random.Random, teams: List[str] = NFL_TEAMS) -> Dict[str, float]:
@@ -85,7 +90,7 @@ def generate_season(
     for week_pairs in schedule:
         week_probs: Dict[str, MatchupProb] = {}
         for home, away in week_pairs:
-            home_win_pct = _win_probability(ratings[home] - ratings[away]) * 100.0
+            home_win_pct = spread_to_win_probability(ratings[home] - ratings[away]) * 100.0
             week_probs[home] = MatchupProb(team=home, opponent=away, win_pct=home_win_pct)
             week_probs[away] = MatchupProb(team=away, opponent=home, win_pct=100.0 - home_win_pct)
         season.append(week_probs)
