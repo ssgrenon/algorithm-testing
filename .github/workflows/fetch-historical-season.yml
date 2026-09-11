@@ -38,7 +38,7 @@ jobs:
 
       - name: Fetch historical seasons
         run: |
-          python analysis/fetch_historical_season.py \
+          python -m analysis.fetch_historical_season \
             --years "${{ inputs.years }}" \
             --weeks "${{ inputs.weeks }}" \
             --out historical_seasons.json
