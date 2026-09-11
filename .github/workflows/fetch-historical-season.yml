@@ -1,0 +1,51 @@
+name: Fetch Historical Season
+
+# Manual only -- this is a one-time-per-analysis bulk backfill (see
+# analysis/fetch_historical_season.py), not a recurring job. It exists
+# because the project's dev sandbox is blocked by organization policy
+# from reaching ESPN's API at all; this workflow's runner has normal
+# internet access, the same way the weekly-report workflow does.
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: 'Years to fetch, e.g. "2016-2025" or "2020,2022,2024"'
+        required: true
+        default: "2016-2025"
+      weeks:
+        description: "Regular-season weeks to fetch per year"
+        required: false
+        default: "18"
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch historical seasons
+        run: |
+          python analysis/fetch_historical_season.py \
+            --years "${{ inputs.years }}" \
+            --weeks "${{ inputs.weeks }}" \
+            --out historical_seasons.json
+
+      - name: Upload result as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-seasons
+          path: historical_seasons.json
+          retention-days: 14

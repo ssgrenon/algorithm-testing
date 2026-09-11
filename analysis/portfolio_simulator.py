@@ -123,25 +123,19 @@ def _binomial_standard_error(p: float, n: int) -> float:
     return (p * (1 - p) / n) ** 0.5
 
 
-def run_sweep(
+def run_sweep_on_seasons(
     entry_counts: List[int],
+    seasons: List[List[Dict[str, MatchupProb]]],
     trials_per_season: int,
-    num_seasons: int,
     seed: int = 42,
-    weeks: int = 18,
 ) -> Dict[int, SweepResult]:
-    """Sweeps ``entry_counts`` (e.g. 1..10), returning a probability of
-    surviving the full season for each.
-
-    All entry counts are evaluated against the *same* pre-generated set of
-    ``num_seasons`` synthetic seasons (common random numbers), so
-    differences across N reflect the strategy, not which random seasons
-    happened to get drawn. Each entry count still gets its own
-    (reproducible) stream of game-outcome draws.
+    """Sweeps ``entry_counts`` (e.g. 1..10) against a fixed, already-built list
+    of seasons -- real (fetched from ESPN) or synthetic, doesn't matter, this
+    function doesn't generate seasons itself. All entry counts are evaluated
+    against the *same* seasons (common random numbers), so differences across
+    N reflect the strategy, not which seasons happened to be included. Each
+    entry count still gets its own (reproducible) stream of game-outcome draws.
     """
-    season_rng = random.Random(seed)
-    seasons = [generate_season(season_rng, weeks=weeks) for _ in range(num_seasons)]
-
     results: Dict[int, SweepResult] = {}
     for entry_count in entry_counts:
         trial_rng = random.Random(seed * 1_000_003 + entry_count)
@@ -168,3 +162,22 @@ def run_sweep(
         )
 
     return results
+
+
+def run_sweep(
+    entry_counts: List[int],
+    trials_per_season: int,
+    num_seasons: int,
+    seed: int = 42,
+    weeks: int = 18,
+) -> Dict[int, SweepResult]:
+    """Sweeps ``entry_counts`` against ``num_seasons`` freshly-generated
+    synthetic seasons (common random numbers across entry counts -- see
+    run_sweep_on_seasons). For a real, ESPN-backtested equivalent, fetch
+    seasons with analysis/fetch_historical_season.py and load them with
+    analysis/real_season.py's load_real_season(), then call
+    run_sweep_on_seasons() directly.
+    """
+    season_rng = random.Random(seed)
+    seasons = [generate_season(season_rng, weeks=weeks) for _ in range(num_seasons)]
+    return run_sweep_on_seasons(entry_counts, seasons, trials_per_season, seed)
