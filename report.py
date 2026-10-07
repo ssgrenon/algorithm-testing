@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Tuple
 
 from data.espn_client import ESPNClient
+from data.field_picks import FieldModel, load_field_model
 from data.models import Game
 from data.teams import NFL_TEAMS
 from models.future_value import compute_future_value
@@ -22,6 +23,7 @@ from models.win_prob import TeamWeekWinProbability, build_win_probability_table
 from pick_history import RESULT_LABELS, HistoryRow, PickResult, build_combined_pick_history, format_result_text
 from state.entries_store import load_used_teams_for_entry
 from strategy.joint_optimizer import (
+    DEFAULT_FIELD_WEIGHT,
     DEFAULT_MIN_WIN_PROB_FLOOR_B,
     ENTRY_A_NAME,
     ENTRY_B_NAME,
@@ -56,6 +58,7 @@ class WeeklyReport:
     lookahead_weeks: int
     week_number_known: bool
     pick_history: List[HistoryRow] = field(default_factory=list)
+    joint_rec_field_aware: Optional[JointRecommendation] = None
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -153,10 +156,18 @@ def build_weekly_report(
     lookahead_weeks: int = DEFAULT_LOOKAHEAD_WEEKS,
     min_win_prob_floor_b: float = DEFAULT_MIN_WIN_PROB_FLOOR_B,
     held_back_limit: int = DEFAULT_HELD_BACK_LIMIT,
+    field_data_source: Optional[str] = None,
+    field_weight: float = DEFAULT_FIELD_WEIGHT,
 ) -> Optional[WeeklyReport]:
     """Run the full read-only pipeline: fetch, score, optimize. Returns
     ``None`` if no game data could be obtained at all (fetch failed and no
     cache on disk). Never writes any state.
+
+    Pass ``field_data_source`` (a local CSV path or http(s) URL of other
+    pool participants' prior picks -- see data/field_picks.py) to also
+    compute a field-aware recommendation alongside the default,
+    field-blind one, so you can compare and decide which to follow.
+    Omit it (the default) to behave exactly as before.
     """
     current_week, current_week_games, all_games = fetch_pipeline_games(client, week, lookahead_weeks)
     if not current_week_games:
@@ -174,6 +185,19 @@ def build_weekly_report(
         used_teams_b=used_teams_b,
         min_win_prob_floor_b=min_win_prob_floor_b,
     )
+
+    joint_rec_field_aware: Optional[JointRecommendation] = None
+    if field_data_source:
+        field_model = load_field_model(field_data_source)
+        joint_rec_field_aware = recommend_joint(
+            current_week_games,
+            current_week or 0,
+            used_teams_a=used_teams_a,
+            used_teams_b=used_teams_b,
+            min_win_prob_floor_b=min_win_prob_floor_b,
+            field_model=field_model,
+            field_weight=field_weight,
+        )
 
     picked_teams = {p.team_abbreviation for p in (joint_rec.pick_a, joint_rec.pick_b) if p is not None}
     held_back: List[HeldBackTeam] = []
@@ -199,6 +223,7 @@ def build_weekly_report(
         lookahead_weeks=lookahead_weeks,
         week_number_known=current_week is not None,
         pick_history=build_combined_pick_history(client),
+        joint_rec_field_aware=joint_rec_field_aware,
     )
 
 
@@ -214,7 +239,10 @@ def render_text(report: WeeklyReport) -> str:
     week_label = report.week or "unknown"
     lines.append(f"=== Survivor Picker Weekly Report -- Week {week_label} ===\n")
 
-    lines.append("RECOMMENDED PICKS (joint optimizer)")
+    header = "RECOMMENDED PICKS (joint optimizer)"
+    if report.joint_rec_field_aware is not None:
+        header += " -- IGNORING THE FIELD"
+    lines.append(header)
     joint_rec = report.joint_rec
     if joint_rec.pick_a is not None and joint_rec.pick_b is not None:
         lines.append(f"  Entry A: {describe_option(joint_rec.pick_a)}")
@@ -228,6 +256,33 @@ def render_text(report: WeeklyReport) -> str:
         lines.append("  No valid pick pair available this week.")
     lines.append(f"  Reasoning: {joint_rec.reasoning}")
     lines.append("")
+
+    if report.joint_rec_field_aware is not None:
+        field_rec = report.joint_rec_field_aware
+        lines.append("RECOMMENDED PICKS -- CONSIDERING THE FIELD")
+        if field_rec.pick_a is not None and field_rec.pick_b is not None:
+            lines.append(f"  Entry A: {describe_option(field_rec.pick_a)}")
+            lines.append(f"  Entry B: {describe_option(field_rec.pick_b)}")
+            lines.append(
+                f"  Outcomes this week -- both survive: {field_rec.both_survive_pct:.1f}% | "
+                f"one survives: {field_rec.one_survives_pct:.1f}% | "
+                f"both eliminated: {field_rec.both_eliminated_pct:.1f}%"
+            )
+        else:
+            lines.append("  No valid pick pair available this week.")
+        lines.append(f"  Reasoning: {field_rec.reasoning}")
+
+        same_picks = (
+            joint_rec.pick_a is not None
+            and field_rec.pick_a is not None
+            and {joint_rec.pick_a.team_abbreviation, joint_rec.pick_b.team_abbreviation}
+            == {field_rec.pick_a.team_abbreviation, field_rec.pick_b.team_abbreviation}
+        )
+        if same_picks:
+            lines.append("  Same picks either way -- the field doesn't change the recommendation this week.")
+        else:
+            lines.append("  Differs from the field-blind recommendation above -- your call which to follow.")
+        lines.append("")
 
     lines.append("REMAINING TEAMS POOL")
     lines.append(f"  Entry A ({len(report.remaining_a)} remaining): {', '.join(report.remaining_a)}")
@@ -338,6 +393,44 @@ def render_html(report: Optional[WeeklyReport], title: str = "Survivor Picker We
           <div class="outcome"><span class="value">{joint_rec.both_eliminated_pct:.1f}%</span><span class="label">Both eliminated</span></div>
         </div>"""
 
+        picks_heading = "Week {} recommended picks".format(_esc(week_label))
+        field_section_html = ""
+        if report.joint_rec_field_aware is not None:
+            field_rec = report.joint_rec_field_aware
+            picks_heading += " &mdash; ignoring the field"
+
+            field_outcomes_html = ""
+            field_picks_html = _pick_card_html("Entry A", field_rec.pick_a) + _pick_card_html("Entry B", field_rec.pick_b)
+            if field_rec.pick_a is not None and field_rec.pick_b is not None:
+                field_outcomes_html = f"""
+        <div class="outcomes">
+          <div class="outcome"><span class="value">{field_rec.both_survive_pct:.1f}%</span><span class="label">Both survive</span></div>
+          <div class="outcome"><span class="value">{field_rec.one_survives_pct:.1f}%</span><span class="label">One survives</span></div>
+          <div class="outcome"><span class="value">{field_rec.both_eliminated_pct:.1f}%</span><span class="label">Both eliminated</span></div>
+        </div>"""
+
+            same_picks = (
+                joint_rec.pick_a is not None
+                and field_rec.pick_a is not None
+                and {joint_rec.pick_a.team_abbreviation, joint_rec.pick_b.team_abbreviation}
+                == {field_rec.pick_a.team_abbreviation, field_rec.pick_b.team_abbreviation}
+            )
+            agreement_note = (
+                "Same picks either way &mdash; the field doesn't change the recommendation this week."
+                if same_picks
+                else "Differs from the field-blind recommendation above &mdash; your call which to follow."
+            )
+
+            field_section_html = f"""
+        <section>
+          <h2>Week {_esc(week_label)} recommended picks &mdash; considering the field</h2>
+          <div class="picks">{field_picks_html}
+          </div>
+          {field_outcomes_html}
+          <p class="reasoning">{_esc(field_rec.reasoning)}</p>
+          <p class="agreement">{agreement_note}</p>
+        </section>"""
+
         remaining_html = f"""
         <div class="pool">
           <h3>Entry A <span class="count">({len(report.remaining_a)} remaining)</span></h3>
@@ -397,12 +490,13 @@ def render_html(report: Optional[WeeklyReport], title: str = "Survivor Picker We
 
         body = f"""
         <section>
-          <h2>Week {_esc(week_label)} recommended picks</h2>
+          <h2>{picks_heading}</h2>
           <div class="picks">{picks_html}
           </div>
           {outcomes_html}
           <p class="reasoning">{_esc(joint_rec.reasoning)}</p>
         </section>
+        {field_section_html}
 
         <section>
           <h2>Remaining teams pool</h2>
@@ -472,6 +566,7 @@ def render_html(report: Optional[WeeklyReport], title: str = "Survivor Picker We
   .outcome .value {{ display: block; font-size: 1.3rem; font-weight: 700; font-variant-numeric: tabular-nums; }}
   .outcome .label {{ display: block; color: var(--muted); font-size: 0.8rem; margin-top: 2px; }}
   .reasoning {{ color: var(--muted); font-size: 0.9rem; margin: 16px 0 0; line-height: 1.5; }}
+  .agreement {{ font-size: 0.9rem; margin: 8px 0 0; font-weight: 600; }}
   .pools {{ display: flex; gap: 16px; flex-wrap: wrap; }}
   .pool {{ flex: 1 1 300px; }}
   .pool .count {{ color: var(--muted); font-weight: 400; }}

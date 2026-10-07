@@ -28,7 +28,15 @@ class TestCmdWeeklyNoData:
         args = type(
             "Args",
             (),
-            {"week": None, "lookahead_weeks": 3, "min_win_prob_floor_b": 65.0, "held_back_limit": 10, "yes": False},
+            {
+                "week": None,
+                "lookahead_weeks": 3,
+                "min_win_prob_floor_b": 65.0,
+                "held_back_limit": 10,
+                "field_csv": None,
+                "field_weight": 0.3,
+                "yes": False,
+            },
         )()
         with patch("main.build_weekly_report", return_value=None):
             try:

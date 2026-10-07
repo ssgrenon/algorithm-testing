@@ -33,7 +33,14 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Generate report
-        run: python generate_report.py --out docs/index.html
+        env:
+          FIELD_PICKS_CSV_URL: ${{ secrets.FIELD_PICKS_CSV_URL }}
+        run: |
+          if [ -n "$FIELD_PICKS_CSV_URL" ]; then
+            python generate_report.py --out docs/index.html --field-csv "$FIELD_PICKS_CSV_URL"
+          else
+            python generate_report.py --out docs/index.html
+          fi
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

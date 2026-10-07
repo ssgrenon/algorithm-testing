@@ -112,6 +112,28 @@ clear the same configurable floor. Output includes both picks, the
 reasoning, and the estimated "both survive" / "one survives" / "both
 eliminated" probabilities for the week.
 
+`data/field_picks.py` optionally models the rest of the pool -- useful
+because this pool's pot is split among winners, so surviving alongside a
+huge chunk of the field is worth less than surviving in a small group.
+Given a CSV of other participants' prior picks (local file, or an http(s)
+URL such as a Google Sheets "export as CSV" link; columns are matched
+case-insensitively against a few common aliases -- `entry`/`participant`/
+`name` for the participant and `team`/`pick` for the team, `week` optional),
+it builds a `FieldModel` whose `availability_fraction(team)` says what
+fraction of the field could still pick that team. `strategy/joint_optimizer.py`
+can take this model and penalize a pick's ranking score (not its true win
+probability -- that never changes) in proportion to how much of the field
+could still make the same pick, via `field_weight` (default `DEFAULT_FIELD_WEIGHT
+= 0.3`, deliberately mild). This is entirely optional: omit it and both
+`report.py` and the CLI behave exactly as before (field-blind).
+
+When you do pass field data (`--field-csv` on `main.py weekly` or
+`generate_report.py`, see below), the report doesn't just blend the two --
+it shows **both** recommendations side by side ("ignoring the field" and
+"considering the field") plus a note on whether they agree, so you can see
+exactly how the field data changes the pick and decide for yourself which
+to follow.
+
 `main.py`'s `weekly` command ties all of the above into one pipeline: fetch
 this week's games plus the next few weeks (for the look-ahead report),
 build the win-probability table, run the joint optimizer, print a report,
@@ -140,7 +162,16 @@ confirm-and-record) and `generate_report.py` (a static HTML page, styled
 for light/dark and mobile) build on it, so the two never drift apart.
 `.github/workflows/weekly-report.yml` runs `generate_report.py` on a
 schedule and publishes the result to GitHub Pages -- see "View this
-week's report" above.
+week's report" above. To have the published report include the
+field-aware comparison, set a repo secret named `FIELD_PICKS_CSV_URL` to
+your pool spreadsheet's CSV export link (Settings -> Secrets and
+variables -> Actions -> New repository secret); the workflow passes it to
+`generate_report.py --field-csv` automatically when present, and runs
+field-blind as before when it's unset. For a Google Sheet, that link is
+`https://docs.google.com/spreadsheets/d/<SHEET_ID>/export?format=csv`
+(append `&gid=<tab id>` if your picks aren't on the sheet's first tab),
+and the sheet must be shared so "anyone with the link" can view it, since
+the workflow fetches it anonymously.
 
 ## How many entries should you buy? (portfolio analysis)
 
@@ -233,6 +264,14 @@ python main.py show-history
 # workflow runs automatically -- you shouldn't normally need to run it
 # yourself, but it's here if you want to preview docs/index.html locally)
 python generate_report.py --out docs/index.html
+
+# Also show a field-aware recommendation (alongside the default field-blind
+# one) built from other pool participants' prior picks -- a local CSV path
+# or an http(s) URL (e.g. a Google Sheets "export as CSV" link) both work
+python main.py weekly --field-csv field_picks.csv
+python main.py weekly --field-csv "https://docs.google.com/spreadsheets/d/<ID>/export?format=csv"
+python main.py weekly --field-csv field_picks.csv --field-weight 0.5
+python generate_report.py --field-csv field_picks.csv
 ```
 
 ## Project layout
@@ -253,6 +292,7 @@ data/
   espn_client.py            ESPN API client: fetch + cache + retry + parsing
   models.py                 Game/Team/WinProbability/Odds dataclasses
   teams.py                  static list of all 32 NFL team abbreviations
+  field_picks.py            optional: models the rest of the pool from a CSV of others' prior picks
 picker/
   recommender.py            ranks candidates per entry
 models/
@@ -279,8 +319,9 @@ tests/
   test_entries_store.py     per-entry state file tests
   test_entry_a_value.py     Entry A strategy scoring + reasoning tests
   test_entry_b_hedge.py     Entry B hedge scoring + reasoning tests
-  test_joint_optimizer.py   joint-search constraints + objective tests
-  test_report.py            pipeline: fetch orchestration + held-back logic
+  test_joint_optimizer.py   joint-search constraints + objective tests + field-aware scoring
+  test_field_picks.py       field CSV parsing + FieldModel availability tests
+  test_report.py            pipeline: fetch orchestration + held-back logic + field-aware render
   test_pick_history.py      win/loss/tie/pending resolution tests
   test_main.py              CLI confirmation prompt + no-data path
   test_generate_report.py   HTML report generation script

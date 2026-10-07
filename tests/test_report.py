@@ -1,7 +1,8 @@
 from data.models import Game, Odds, Team, WinProbability
 from data.teams import NFL_TEAMS
 from models.win_prob import TeamWeekWinProbability, build_win_probability_table
-from report import compute_held_back_teams, fetch_pipeline_games, remaining_pool
+from report import WeeklyReport, compute_held_back_teams, fetch_pipeline_games, remaining_pool, render_html, render_text
+from strategy.joint_optimizer import JointRecommendation, TeamOption
 
 
 def make_game(
@@ -178,3 +179,95 @@ class TestComputeHeldBackTeams:
         )
         held_back_abbrevs = [h.team_abbreviation for h in held_back]
         assert held_back_abbrevs.index("SF") < held_back_abbrevs.index("BUF")
+
+
+def team_option(team, opponent="OPP", win_pct=80.0):
+    return TeamOption(
+        team_abbreviation=team,
+        opponent_abbreviation=opponent,
+        event_id="1",
+        win_pct=win_pct,
+        win_pct_source="api",
+        spread_detail=None,
+    )
+
+
+def joint_rec(pick_a_team, pick_b_team, reasoning="because reasons", field_aware=False):
+    pick_a = team_option(pick_a_team) if pick_a_team else None
+    pick_b = team_option(pick_b_team) if pick_b_team else None
+    return JointRecommendation(
+        week=3,
+        pick_a=pick_a,
+        pick_b=pick_b,
+        both_survive_pct=60.0 if pick_a and pick_b else None,
+        one_survives_pct=35.0 if pick_a and pick_b else None,
+        both_eliminated_pct=5.0 if pick_a and pick_b else None,
+        reasoning=reasoning,
+        field_aware=field_aware,
+    )
+
+
+def make_report(rec, field_rec=None):
+    return WeeklyReport(
+        week=3,
+        joint_rec=rec,
+        used_teams_a=[],
+        used_teams_b=[],
+        remaining_a=["KC", "SF"],
+        remaining_b=["KC", "SF"],
+        held_back=[],
+        lookahead_weeks=3,
+        week_number_known=True,
+        joint_rec_field_aware=field_rec,
+    )
+
+
+class TestRenderTextFieldAware:
+    def test_no_field_section_when_field_aware_rec_absent(self):
+        text = render_text(make_report(joint_rec("KC", "SF")))
+        assert "RECOMMENDED PICKS (joint optimizer)" in text
+        assert "IGNORING THE FIELD" not in text
+        assert "CONSIDERING THE FIELD" not in text
+
+    def test_shows_both_sections_with_same_picks_note_when_picks_match(self):
+        rec = joint_rec("KC", "SF")
+        field_rec = joint_rec("KC", "SF", reasoning="field-aware reasoning", field_aware=True)
+        text = render_text(make_report(rec, field_rec))
+
+        assert "IGNORING THE FIELD" in text
+        assert "CONSIDERING THE FIELD" in text
+        assert "field-aware reasoning" in text
+        assert "Same picks either way" in text
+
+    def test_shows_differs_note_when_picks_diverge(self):
+        rec = joint_rec("KC", "SF")
+        field_rec = joint_rec("BUF", "SF", field_aware=True)
+        text = render_text(make_report(rec, field_rec))
+        assert "Differs from the field-blind recommendation above" in text
+
+
+class TestRenderHtmlFieldAware:
+    def test_no_field_section_when_field_aware_rec_absent(self):
+        html = render_html(make_report(joint_rec("KC", "SF")))
+        assert "considering the field" not in html
+        assert "ignoring the field" not in html
+
+    def test_shows_both_sections_with_same_picks_note_when_picks_match(self):
+        rec = joint_rec("KC", "SF")
+        field_rec = joint_rec("KC", "SF", reasoning="field-aware reasoning", field_aware=True)
+        html = render_html(make_report(rec, field_rec))
+
+        assert "ignoring the field" in html
+        assert "considering the field" in html
+        assert "field-aware reasoning" in html
+        assert "Same picks either way" in html
+
+    def test_shows_differs_note_when_picks_diverge(self):
+        rec = joint_rec("KC", "SF")
+        field_rec = joint_rec("BUF", "SF", field_aware=True)
+        html = render_html(make_report(rec, field_rec))
+        assert "Differs from the field-blind recommendation above" in html
+
+    def test_none_report_renders_fallback_without_error(self):
+        html = render_html(None)
+        assert "No game data was available" in html

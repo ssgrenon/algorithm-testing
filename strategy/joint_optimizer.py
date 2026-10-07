@@ -27,12 +27,23 @@ A pair is only considered if it:
 
 The search space is small (at most ~2x the number of games per entry), so
 this is a plain brute-force scan over all pairs, not an ILP/solver.
+
+Optionally field-aware: pass a ``FieldModel`` (data/field_picks.py, built
+from other pool participants' prior picks) and the ranking additionally
+penalizes picks most of the field can still also make -- since the pot
+splits among winners, surviving alongside a huge chunk of the field is
+worth less than surviving in a small group. This never changes a pick's
+*true* win/survival probabilities (those depend only on the game, not on
+who else picks the same team) -- it only changes which pair ranks best.
+Omitting ``field_model`` reproduces the original (field-blind) ranking
+exactly, so existing callers are unaffected.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Optional
 
+from data.field_picks import FieldModel
 from data.models import Game
 from models.win_prob import resolve_team_win_probability
 from state.entries_store import load_used_teams_for_entry
@@ -41,6 +52,14 @@ from strategy.entry_b_hedge import meets_win_prob_floor
 
 ENTRY_A_NAME = "Entry A"
 ENTRY_B_NAME = "Entry B"
+
+# How many objective-score points a pick loses for every 100% of the field
+# that still has it available. 0.3 is deliberately mild: at the extremes
+# (a team the whole field still has vs. one nobody else has), the gap is
+# comparable to swapping from an ~85% favorite to an ~70% one -- noticeable,
+# but it won't make the optimizer throw away a true survival edge chasing
+# differentiation alone.
+DEFAULT_FIELD_WEIGHT = 0.3
 
 
 @dataclass
@@ -60,7 +79,10 @@ class PairScore:
     both_survive_pct: float
     one_survives_pct: float
     both_eliminated_pct: float
-    objective_score: float
+    objective_score: float  # what ranking uses -- equals raw_objective_score unless field-aware
+    raw_objective_score: float  # the field-blind P(A)+P(B)-P(both lose) objective, always present
+    field_availability_a: Optional[float] = None  # 0-1, fraction of the field that could still pick A's team
+    field_availability_b: Optional[float] = None
 
 
 @dataclass
@@ -82,6 +104,9 @@ class JointRecommendation:
     reasoning: str
     floor_relaxed: bool = False
     pairs_considered: int = 0
+    field_aware: bool = False
+    field_availability_a: Optional[float] = None
+    field_availability_b: Optional[float] = None
 
 
 def build_team_options(current_week_games: List[Game]) -> List[TeamOption]:
@@ -122,6 +147,24 @@ def _score_pair(a: TeamOption, b: TeamOption) -> PairScore:
         one_survives_pct=one_survives * 100.0,
         both_eliminated_pct=both_eliminated * 100.0,
         objective_score=objective,
+        raw_objective_score=objective,
+    )
+
+
+def _apply_field_awareness(pair: PairScore, field_model: FieldModel, field_weight: float) -> PairScore:
+    """Returns a copy of ``pair`` with objective_score penalized by how much
+    of the field can still make each pick -- true survival probabilities
+    (both_survive_pct etc.) are untouched, since those don't depend on the
+    field at all; only which pair ranks best changes.
+    """
+    availability_a = field_model.availability_fraction(pair.pick_a.team_abbreviation)
+    availability_b = field_model.availability_fraction(pair.pick_b.team_abbreviation)
+    crowding_penalty = field_weight * (availability_a + availability_b)
+    return replace(
+        pair,
+        objective_score=pair.raw_objective_score - crowding_penalty,
+        field_availability_a=availability_a,
+        field_availability_b=availability_b,
     )
 
 
@@ -130,8 +173,15 @@ def find_best_pair(
     used_teams_a: List[str],
     used_teams_b: List[str],
     min_win_prob_floor_b: float = DEFAULT_MIN_WIN_PROB_FLOOR_B,
+    field_model: Optional[FieldModel] = None,
+    field_weight: float = DEFAULT_FIELD_WEIGHT,
 ) -> JointSearchResult:
-    """Pure brute-force search over all constraint-satisfying (team_a, team_b) pairs."""
+    """Pure brute-force search over all constraint-satisfying (team_a, team_b) pairs.
+
+    Pass ``field_model`` to additionally penalize picks most of the field
+    can still also make (see module docstring) -- omit it for the
+    original, field-blind ranking.
+    """
     options = build_team_options(current_week_games)
 
     available_a = [o for o in options if o.team_abbreviation not in used_teams_a and o.win_pct is not None]
@@ -150,7 +200,10 @@ def find_best_pair(
                 continue
             if a.event_id is not None and a.event_id == b.event_id:
                 continue  # same game -- opposing sides
-            scored.append(_score_pair(a, b))
+            pair = _score_pair(a, b)
+            if field_model is not None:
+                pair = _apply_field_awareness(pair, field_model, field_weight)
+            scored.append(pair)
 
     scored.sort(key=lambda p: (-p.objective_score, p.pick_a.team_abbreviation, p.pick_b.team_abbreviation))
 
@@ -210,6 +263,15 @@ def _build_reasoning(
             f"({pair.objective_score:.3f} vs {runner_up.objective_score:.3f})."
         )
 
+    if pair.field_availability_a is not None and pair.field_availability_b is not None:
+        parts.append(
+            f"Field-aware: {pair.field_availability_a:.0%} of the field could still pick "
+            f"{pair.pick_a.team_abbreviation}, {pair.field_availability_b:.0%} could still pick "
+            f"{pair.pick_b.team_abbreviation} -- the ranking (objective {pair.objective_score:.3f}, "
+            f"vs {pair.raw_objective_score:.3f} ignoring the field) favors scarcer picks over equally "
+            f"safe crowded ones, since the pot splits among winners."
+        )
+
     return " ".join(parts)
 
 
@@ -219,18 +281,27 @@ def recommend(
     used_teams_a: Optional[List[str]] = None,
     used_teams_b: Optional[List[str]] = None,
     min_win_prob_floor_b: float = DEFAULT_MIN_WIN_PROB_FLOOR_B,
+    field_model: Optional[FieldModel] = None,
+    field_weight: float = DEFAULT_FIELD_WEIGHT,
 ) -> JointRecommendation:
     """Jointly optimized picks for both entries, with reasoning.
 
     ``used_teams_a``/``used_teams_b`` default to loading
     ``state/used_teams_a.json`` / ``state/used_teams_b.json``.
+
+    Pass ``field_model`` (data/field_picks.py, built from other pool
+    participants' prior picks) to rank pairs with the field-aware
+    crowding penalty described in the module docstring; omit it (the
+    default) for the original field-blind ranking.
     """
     if used_teams_a is None:
         used_teams_a = load_used_teams_for_entry(ENTRY_A_NAME)
     if used_teams_b is None:
         used_teams_b = load_used_teams_for_entry(ENTRY_B_NAME)
 
-    search = find_best_pair(current_week_games, used_teams_a, used_teams_b, min_win_prob_floor_b)
+    search = find_best_pair(
+        current_week_games, used_teams_a, used_teams_b, min_win_prob_floor_b, field_model, field_weight
+    )
 
     if search.best is None:
         return JointRecommendation(
@@ -243,6 +314,7 @@ def recommend(
             reasoning="No valid pick pair available this week (not enough eligible teams/games for both entries).",
             floor_relaxed=search.floor_relaxed,
             pairs_considered=search.pairs_considered,
+            field_aware=field_model is not None,
         )
 
     best = search.best
@@ -256,4 +328,7 @@ def recommend(
         reasoning=_build_reasoning(best, search.floor_relaxed, min_win_prob_floor_b, search.runner_up),
         floor_relaxed=search.floor_relaxed,
         pairs_considered=search.pairs_considered,
+        field_aware=field_model is not None,
+        field_availability_a=best.field_availability_a,
+        field_availability_b=best.field_availability_b,
     )
