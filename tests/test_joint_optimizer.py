@@ -1,5 +1,6 @@
 import pytest
 
+from data.field_picks import FieldModel
 from data.models import Game, Odds, Team, WinProbability
 from strategy.joint_optimizer import (
     DEFAULT_MIN_WIN_PROB_FLOOR_B,
@@ -151,3 +152,75 @@ class TestRecommend:
         monkeypatch.setattr(joint_optimizer, "load_used_teams_for_entry", fake_loader)
         result = joint_optimizer.recommend(THREE_GAMES, current_week=3, min_win_prob_floor_b=0.0)
         assert result.pick_a.team_abbreviation != "KC"
+
+
+def make_field_model(availability_by_team, entry_count=10):
+    """Builds a FieldModel where each team's availability_fraction matches
+    ``availability_by_team`` exactly, given ``entry_count`` total entries.
+    """
+    entry_names = [f"field_{i}" for i in range(entry_count)]
+    used_teams_by_entry = {name: set() for name in entry_names}
+    for team, availability in availability_by_team.items():
+        used_by = entry_count - round(availability * entry_count)
+        for i in range(used_by):
+            used_teams_by_entry[entry_names[i]].add(team)
+    return FieldModel(used_teams_by_entry=used_teams_by_entry)
+
+
+class TestFieldAwareScoring:
+    def test_field_blind_by_default_matches_no_field_model(self):
+        with_field = find_best_pair(THREE_GAMES, used_teams_a=[], used_teams_b=[], min_win_prob_floor_b=0.0)
+        without_field = find_best_pair(
+            THREE_GAMES, used_teams_a=[], used_teams_b=[], min_win_prob_floor_b=0.0, field_model=None
+        )
+        assert with_field.best.objective_score == without_field.best.objective_score
+        assert with_field.best.field_availability_a is None
+
+    def test_crowded_pick_gets_penalized_and_can_change_the_winner(self):
+        # Field-blind best pair is KC+SF (0.9 and 0.75 favorites). Make SF
+        # fully crowded (every field entry could still pick it) and BUF
+        # fully scarce (the whole field has already burned it, so picking
+        # BUF ourselves is maximally differentiating) -- this should flip
+        # the ranking to KC+BUF despite BUF's lower raw win probability.
+        field_model = make_field_model({"KC": 0.5, "SF": 1.0, "BUF": 0.0})
+
+        blind = find_best_pair(THREE_GAMES, used_teams_a=[], used_teams_b=[], min_win_prob_floor_b=0.0)
+        aware = find_best_pair(
+            THREE_GAMES, used_teams_a=[], used_teams_b=[], min_win_prob_floor_b=0.0, field_model=field_model
+        )
+
+        blind_teams = {blind.best.pick_a.team_abbreviation, blind.best.pick_b.team_abbreviation}
+        aware_teams = {aware.best.pick_a.team_abbreviation, aware.best.pick_b.team_abbreviation}
+        assert blind_teams == {"KC", "SF"}
+        assert aware_teams == {"KC", "BUF"}
+
+    def test_true_survival_probabilities_unaffected_by_field_awareness(self):
+        # Field-awareness only changes ranking, never the actual probabilities.
+        field_model = make_field_model({"KC": 0.1, "SF": 1.0, "BUF": 0.5})
+        aware = find_best_pair(
+            THREE_GAMES, used_teams_a=[], used_teams_b=[], min_win_prob_floor_b=0.0, field_model=field_model
+        )
+        p_kc, p_den = 0.9, 0.1
+        # Whichever pair won, its both/one/none-survive percentages should
+        # still be the plain product of true win probabilities.
+        pair = aware.best
+        p_a = pair.pick_a.win_pct / 100.0
+        p_b = pair.pick_b.win_pct / 100.0
+        assert pair.both_survive_pct == pytest.approx(p_a * p_b * 100.0)
+        assert pair.raw_objective_score == pytest.approx(p_a + p_b - (1 - p_a) * (1 - p_b))
+
+    def test_recommend_surfaces_field_awareness_in_reasoning_and_flags(self):
+        field_model = make_field_model({"KC": 0.5, "SF": 1.0, "BUF": 0.0})
+        result = recommend(
+            THREE_GAMES, current_week=3, used_teams_a=[], used_teams_b=[], min_win_prob_floor_b=0.0,
+            field_model=field_model,
+        )
+        assert result.field_aware is True
+        assert result.field_availability_a is not None
+        assert "Field-aware" in result.reasoning
+
+    def test_recommend_without_field_model_is_not_field_aware(self):
+        result = recommend(THREE_GAMES, current_week=3, used_teams_a=[], used_teams_b=[], min_win_prob_floor_b=0.0)
+        assert result.field_aware is False
+        assert result.field_availability_a is None
+        assert "Field-aware" not in result.reasoning

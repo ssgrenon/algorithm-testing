@@ -6,7 +6,8 @@ you confirm, records the picks it recommended; `record-pick` lets you
 record something different (or by hand) at any time.
 
 Usage:
-    python main.py weekly [--week N] [--lookahead-weeks N] [--min-win-prob-floor-b PCT] [--yes]
+    python main.py weekly [--week N] [--lookahead-weeks N] [--min-win-prob-floor-b PCT]
+                           [--field-csv PATH_OR_URL] [--field-weight N] [--yes]
     python main.py recommend [--week N] [--top N]
     python main.py record-pick --entry "Entry A" --team KC
     python main.py show-history
@@ -28,7 +29,7 @@ from report import (
     render_text,
 )
 from state.entries_store import load_used_teams, record_pick
-from strategy.joint_optimizer import DEFAULT_MIN_WIN_PROB_FLOOR_B, ENTRY_A_NAME, ENTRY_B_NAME
+from strategy.joint_optimizer import DEFAULT_FIELD_WEIGHT, DEFAULT_MIN_WIN_PROB_FLOOR_B, ENTRY_A_NAME, ENTRY_B_NAME
 
 
 def _confirm(prompt: str) -> bool:
@@ -49,6 +50,8 @@ def cmd_weekly(args: argparse.Namespace) -> None:
         lookahead_weeks=args.lookahead_weeks,
         min_win_prob_floor_b=args.min_win_prob_floor_b,
         held_back_limit=args.held_back_limit,
+        field_data_source=args.field_csv,
+        field_weight=args.field_weight,
     )
     if report is None:
         print("No game data available (ESPN fetch failed and no cache on disk).")
@@ -172,6 +175,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     weekly_parser.add_argument(
         "--held-back-limit", type=int, default=DEFAULT_HELD_BACK_LIMIT, help="max held-back teams to list"
+    )
+    weekly_parser.add_argument(
+        "--field-csv",
+        type=str,
+        default=None,
+        help=(
+            "local path or http(s) URL to a CSV of other pool participants' prior picks "
+            "(see data/field_picks.py); when set, also prints a field-aware recommendation "
+            "alongside the default field-blind one"
+        ),
+    )
+    weekly_parser.add_argument(
+        "--field-weight",
+        type=float,
+        default=DEFAULT_FIELD_WEIGHT,
+        help="how strongly to penalize picks most of the field can still make (default: %(default)s)",
     )
     weekly_parser.add_argument(
         "--yes", "-y", action="store_true", help="record the recommended picks without prompting for confirmation"

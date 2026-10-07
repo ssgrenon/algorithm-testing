@@ -8,6 +8,7 @@ anyone running a command by hand.
 
 Usage:
     python generate_report.py [--out docs/index.html] [--week N] [--lookahead-weeks N]
+                               [--field-csv PATH_OR_URL] [--field-weight N]
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from report import (
     build_weekly_report,
     render_html,
 )
-from strategy.joint_optimizer import DEFAULT_MIN_WIN_PROB_FLOOR_B
+from strategy.joint_optimizer import DEFAULT_FIELD_WEIGHT, DEFAULT_MIN_WIN_PROB_FLOOR_B
 
 DEFAULT_OUTPUT_PATH = Path(__file__).resolve().parent / "docs" / "index.html"
 
@@ -35,6 +36,17 @@ def main() -> None:
     parser.add_argument("--lookahead-weeks", type=int, default=DEFAULT_LOOKAHEAD_WEEKS)
     parser.add_argument("--min-win-prob-floor-b", type=float, default=DEFAULT_MIN_WIN_PROB_FLOOR_B)
     parser.add_argument("--held-back-limit", type=int, default=DEFAULT_HELD_BACK_LIMIT)
+    parser.add_argument(
+        "--field-csv",
+        type=str,
+        default=None,
+        help=(
+            "local path or http(s) URL to a CSV of other pool participants' prior picks "
+            "(see data/field_picks.py); when set, the page also shows a field-aware "
+            "recommendation alongside the default field-blind one"
+        ),
+    )
+    parser.add_argument("--field-weight", type=float, default=DEFAULT_FIELD_WEIGHT)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -50,6 +62,8 @@ def main() -> None:
         lookahead_weeks=args.lookahead_weeks,
         min_win_prob_floor_b=args.min_win_prob_floor_b,
         held_back_limit=args.held_back_limit,
+        field_data_source=args.field_csv,
+        field_weight=args.field_weight,
     )
 
     html = render_html(report)
