@@ -162,7 +162,16 @@ confirm-and-record) and `generate_report.py` (a static HTML page, styled
 for light/dark and mobile) build on it, so the two never drift apart.
 `.github/workflows/weekly-report.yml` runs `generate_report.py` on a
 schedule and publishes the result to GitHub Pages -- see "View this
-week's report" above.
+week's report" above. To have the published report include the
+field-aware comparison, set a repo secret named `FIELD_PICKS_CSV_URL` to
+your pool spreadsheet's CSV export link (Settings -> Secrets and
+variables -> Actions -> New repository secret); the workflow passes it to
+`generate_report.py --field-csv` automatically when present, and runs
+field-blind as before when it's unset. For a Google Sheet, that link is
+`https://docs.google.com/spreadsheets/d/<SHEET_ID>/export?format=csv`
+(append `&gid=<tab id>` if your picks aren't on the sheet's first tab),
+and the sheet must be shared so "anyone with the link" can view it, since
+the workflow fetches it anonymously.
 
 ## How many entries should you buy? (portfolio analysis)
 
